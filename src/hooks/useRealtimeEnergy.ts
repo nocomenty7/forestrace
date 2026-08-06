@@ -2,54 +2,24 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const CYCLE_DURATION_MS = 5000; // 5 seconds cycle
-const STORAGE_KEY = 'forestrace_energy_5s';
+const CYCLE_DURATION_MS = 5000; // 5 seconds fill time
 
 export interface UseRealtimeEnergyReturn {
-  energy: number;
-  gaugePercent: number; // Smooth 0 to 100% of current 5s fill
+  gaugePercent: number; // 0 to 100%
+  isWaterReady: boolean; // True when 5s fill completes and button is active
   isPaused: boolean;
-  isHarvestReady: boolean;
-  consumeEnergy: () => number;
+  triggerHarvest: () => void; // Reset gauge to 0 and restart 5s timer
 }
 
 export function useRealtimeEnergy(): UseRealtimeEnergyReturn {
-  const [energy, setEnergy] = useState<number>(0);
   const [gaugePercent, setGaugePercent] = useState<number>(0);
+  const [isWaterReady, setIsWaterReady] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
   const cycleStartRef = useRef<number>(Date.now());
   const animFrameRef = useRef<number | null>(null);
 
-  // 1. Restore local storage on client mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = parseInt(saved, 10);
-        if (!isNaN(parsed) && parsed > 0) {
-          setEnergy(parsed);
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to access localStorage:', e);
-    }
-    setIsHydrated(true);
-    cycleStartRef.current = Date.now();
-  }, []);
-
-  // 2. Persist energy to localStorage
-  useEffect(() => {
-    if (!isHydrated) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, energy.toString());
-    } catch (e) {
-      console.warn('Failed to save localStorage:', e);
-    }
-  }, [energy, isHydrated]);
-
-  // 3. Tab visibility and focus listener
+  // Visibility and tab focus check
   const checkVisibility = useCallback(() => {
     const isVisible =
       typeof document !== 'undefined' &&
@@ -57,19 +27,13 @@ export function useRealtimeEnergy(): UseRealtimeEnergyReturn {
       document.hasFocus();
 
     setIsPaused(!isVisible);
-    if (isVisible) {
-      cycleStartRef.current = Date.now() - (gaugePercent / 100) * CYCLE_DURATION_MS;
-    }
-  }, [gaugePercent]);
+  }, []);
 
   useEffect(() => {
     checkVisibility();
 
     const handleVisibilityChange = () => checkVisibility();
-    const handleFocus = () => {
-      setIsPaused(false);
-      cycleStartRef.current = Date.now() - (gaugePercent / 100) * CYCLE_DURATION_MS;
-    };
+    const handleFocus = () => setIsPaused(false);
     const handleBlur = () => setIsPaused(true);
 
     window.addEventListener('visibilitychange', handleVisibilityChange);
@@ -81,11 +45,12 @@ export function useRealtimeEnergy(): UseRealtimeEnergyReturn {
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('blur', handleBlur);
     };
-  }, [checkVisibility, gaugePercent]);
+  }, [checkVisibility]);
 
-  // 4. Smooth 5-Second Real-Time Gauge Loop using requestAnimationFrame
+  // 5-Second Realtime Gauge Progress Animation
   useEffect(() => {
-    if (isPaused) {
+    // If backgrounded or button is ALREADY ready (100% full waiting for user click), pause filling
+    if (isPaused || isWaterReady) {
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
         animFrameRef.current = null;
@@ -93,23 +58,20 @@ export function useRealtimeEnergy(): UseRealtimeEnergyReturn {
       return;
     }
 
-    const updateGauge = () => {
+    const updateProgress = () => {
       const elapsed = Date.now() - cycleStartRef.current;
       if (elapsed >= CYCLE_DURATION_MS) {
-        // 5 seconds completed! Accumulate +1 energy
-        setEnergy((prev) => prev + 1);
+        // 5 seconds completed! Lock gauge at 100% and activate Water Button
         setGaugePercent(100);
-        // Reset cycle timer for next 5-second round
-        cycleStartRef.current = Date.now();
+        setIsWaterReady(true);
       } else {
         const percent = Math.min(100, (elapsed / CYCLE_DURATION_MS) * 100);
         setGaugePercent(percent);
+        animFrameRef.current = requestAnimationFrame(updateProgress);
       }
-
-      animFrameRef.current = requestAnimationFrame(updateGauge);
     };
 
-    animFrameRef.current = requestAnimationFrame(updateGauge);
+    animFrameRef.current = requestAnimationFrame(updateProgress);
 
     return () => {
       if (animFrameRef.current) {
@@ -117,29 +79,19 @@ export function useRealtimeEnergy(): UseRealtimeEnergyReturn {
         animFrameRef.current = null;
       }
     };
-  }, [isPaused]);
+  }, [isPaused, isWaterReady]);
 
-  // 5. Consume/Harvest energy action
-  const consumeEnergy = useCallback((): number => {
-    const harvested = energy > 0 ? energy : 1;
-    setEnergy(0);
+  // Reset 5s timer and start next round ONLY when user clicks the water button
+  const triggerHarvest = useCallback(() => {
+    setIsWaterReady(false);
     setGaugePercent(0);
     cycleStartRef.current = Date.now();
-    try {
-      localStorage.setItem(STORAGE_KEY, '0');
-    } catch (e) {
-      console.warn('Failed to reset localStorage:', e);
-    }
-    return harvested;
-  }, [energy]);
-
-  const isHarvestReady = energy > 0 || gaugePercent >= 98;
+  }, []);
 
   return {
-    energy,
     gaugePercent,
+    isWaterReady,
     isPaused,
-    isHarvestReady,
-    consumeEnergy,
+    triggerHarvest,
   };
 }

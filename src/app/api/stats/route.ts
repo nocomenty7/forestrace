@@ -1,18 +1,18 @@
 import { NextResponse } from 'next/server';
 import { redis } from '@/lib/redis';
+import { calculateTreeProgress } from '@/lib/country';
 
-export const revalidate = 0; // Dynamic route
+export const revalidate = 0;
 
 export async function GET(request: Request) {
   try {
-    const userCountry = (
-      request.headers.get('x-vercel-ip-country') || 'UNKNOWN'
-    ).toUpperCase();
+    const headerCountry = request.headers.get('x-vercel-ip-country');
+    const userCountry = (headerCountry || 'UNKNOWN').toUpperCase();
 
-    // Parallel atomic read queries using Upstash Redis zrange with rev: true
+    // Parallel atomic read queries for ALL participating countries
     const [globalScoreRaw, rawLeaderboard, userCountryScoreRaw] = await Promise.all([
       redis.get<number | string>('forestrace:global'),
-      redis.zrange<string[]>('forestrace:leaderboard', 0, 4, {
+      redis.zrange<string[]>('forestrace:leaderboard', 0, -1, {
         rev: true,
         withScores: true,
       }),
@@ -22,14 +22,15 @@ export async function GET(request: Request) {
     const globalScore = Number(globalScoreRaw || 0);
     const userCountryScore = Number(userCountryScoreRaw || 0);
 
-    // Format top countries array
-    const topCountries: { country: string; score: number }[] = [];
+    // Format all countries list
+    const allCountries: { country: string; score: number; completedTrees: number }[] = [];
     if (Array.isArray(rawLeaderboard)) {
       for (let i = 0; i < rawLeaderboard.length; i += 2) {
         const country = String(rawLeaderboard[i] || '');
         const score = Number(rawLeaderboard[i + 1] || 0);
         if (country) {
-          topCountries.push({ country, score });
+          const { completedTrees } = calculateTreeProgress(score);
+          allCountries.push({ country, score, completedTrees });
         }
       }
     }
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
       globalScore,
       userCountry,
       userCountryScore,
-      topCountries,
+      allCountries,
       timestamp: Date.now(),
     });
   } catch (error) {
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
         globalScore: 0,
         userCountry: 'UNKNOWN',
         userCountryScore: 0,
-        topCountries: [],
+        allCountries: [],
       },
       { status: 200 }
     );
